@@ -5,7 +5,7 @@ Benchmarking ξₙ, DC, MI, and MIC feature selection methods for computational 
 Automated reproduction pipeline for:
 
 > *Computational Complexity of Correlation-Based Feature Selection: A Multi-Domain Scalability Analysis of ξₙ, DC, MI, and MIC*  
-> Tinashe Ngorima, Sohar University, 2025
+> Tinashe Ngorima, Sohar University, 2026
 
 ---
 
