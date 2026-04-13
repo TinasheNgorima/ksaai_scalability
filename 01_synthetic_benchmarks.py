@@ -52,7 +52,8 @@ if _FAST:
     _os.environ.setdefault("NGORIMA_XI_NUMPY", "1")
 
 SAMPLE_SIZES = ([1_000, 5_000, 10_000] if _FAST
-                else [1_000, 5_000, 10_000, 30_000, 50_000, 100_000])
+                else [1_000, 5_000, 10_000, 30_000, 50_000,
+                      100_000, 500_000, 1_000_000])
 P_FIXED      = 50  if _FAST else 100
 N_REPS       = 3   if _FAST else 30   # P1 fix: 30 in full mode (paper spec)
 N_WARMUP     = 1   if _FAST else 2    # P3 fix: warm-up discards
