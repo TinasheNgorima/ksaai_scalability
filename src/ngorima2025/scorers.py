@@ -141,14 +141,13 @@ def score_mic(x: np.ndarray, y: np.ndarray,
               alpha: float = 0.6, c: int = 15) -> float:
     """
     Maximal Information Coefficient (Reshef et al., 2011).
-    Uses minepy when available; falls back to a binned MI approximation
-    (NOTE: fallback has different complexity characteristics — results
-    will differ from minepy.  A USE_FALLBACK_MIC flag is set to True
-    so callers can suppress or annotate affected results).
+    Uses minepy when available (direct import or via minepy_env conda env).
+    Falls back to a binned MI approximation only if both fail.
     Complexity: O(n^1.2) empirical (minepy), O(n·B²) fallback.
     """
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
+    # Path 1: minepy available in current environment
     if _MINEPY_AVAILABLE:
         try:
             mine = _MINE(alpha=alpha, c=c)
@@ -156,6 +155,29 @@ def score_mic(x: np.ndarray, y: np.ndarray,
             return float(mine.mic())
         except Exception:
             pass
+    # Path 2: minepy_env conda environment (subprocess fallback)
+    try:
+        import subprocess, json, tempfile, os
+        with tempfile.NamedTemporaryFile(suffix=".npy", delete=False) as fx:
+            np.save(fx.name, np.column_stack([x, y]))
+            tmp_path = fx.name
+        script = (
+            f"import numpy as np, json\n"
+            f"from minepy import MINE\n"
+            f"data = np.load('{tmp_path}')\n"
+            f"mine = MINE(alpha={alpha}, c={c})\n"
+            f"mine.compute_score(data[:,0], data[:,1])\n"
+            f"print(json.dumps(mine.mic()))\n"
+        )
+        result = subprocess.run(
+            ["/opt/conda/bin/conda", "run", "-n", "minepy_env", "python", "-c", script],
+            capture_output=True, text=True, timeout=120
+        )
+        os.unlink(tmp_path)
+        if result.returncode == 0 and result.stdout.strip():
+            return float(json.loads(result.stdout.strip()))
+    except Exception:
+        pass
     # Fallback: binned mutual information (NOT true MIC)
     warnings.warn(
         "minepy not available. MIC approximated via histogram MI. "
