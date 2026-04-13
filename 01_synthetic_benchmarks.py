@@ -44,6 +44,8 @@ warnings.filterwarnings("ignore")
 
 import os as _os
 _FAST = _os.environ.get("NGORIMA_FAST", "0") == "1"
+# Force numpy xi_n for timing benchmarks (xicor is ~8000x slower at n=10000)
+_os.environ.setdefault("NGORIMA_XI_NUMPY", "1")
 # In fast mode, bypass xicor for xi_n to avoid Python-object overhead
 # (~100x slower than numpy fallback). Production runs use xicor.
 if _FAST:
