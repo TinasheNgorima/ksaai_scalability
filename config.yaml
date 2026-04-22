@@ -13,7 +13,7 @@ superconductivity:
   n_rows: 21263
   n_features: 81
 fred_md:
-  url: "https://s3.amazonaws.com/files.fred.stlouisfed.org/fred-md/monthly/current.csv"
+  url: "https://files.stlouisfed.org/files/htdocs/fred-md/monthly/current.csv"
   raw_path: "data/raw/fred_md.csv"
   target_series: "INDPRO"
   target_transform_code: 5

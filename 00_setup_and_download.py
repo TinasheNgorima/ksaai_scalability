@@ -77,7 +77,11 @@ def main():
         log.warning(f"TCGA download skipped (manual download required): {e}")
         log.warning("Pipeline will use synthetic TCGA proxy for Steps 1-4.")
     download_if_missing(SC_URL, SC_RAW_PATH, "UCI SuperConductivity")
-    download_if_missing(FRED_MD_URL, FRED_MD_RAW_PATH, "FRED-MD macroeconomic")
+    try:
+        download_if_missing(FRED_MD_URL, FRED_MD_RAW_PATH, "FRED-MD macroeconomic")
+    except Exception as e:
+        log.warning(f"FRED-MD download failed: {e}")
+        log.warning("Check URL or download manually from https://files.stlouisfed.org/files/htdocs/fred-md/monthly/current.csv")
 
     write_hk_gene_list()
     record_checksums([TCGA_RAW_PATH, SC_RAW_PATH, FRED_MD_RAW_PATH])
