@@ -1,259 +1,119 @@
 """
+scorers.py — KsaaiP2 Pipeline v4_updated
 src/ngorima2025/scorers.py
-==========================
-Canonical implementations of all five dependency measures used in
-Ngorima (2025).  Import from this module in every pipeline step —
-no more per-file duplication.
-
-Methods
--------
-xi_n   : Chatterjee (2021) rank correlation          O(n log n)
-mi     : Mutual information kNN, Kraskov (2004)      O(n log n)
-dc     : Distance correlation, Székely (2007)         O(n²)
-mic    : MIC, Reshef (2011)                           O(n^1.2)
-pearson: Pearson r (linear baseline)                  O(n)
-spearman: Spearman ρ (monotone baseline)              O(n log n)
-
-P1 fix : Single source of truth; all pipeline steps import from here.
-P2 fix : Pearson and Spearman baselines added.
 """
 
-from __future__ import annotations
-
+import os
+import subprocess
+import tempfile
 import warnings
 import numpy as np
-from scipy import stats as scipy_stats
 
-# --------------------------------------------------------------------------- #
-#  Optional-dependency flags (set at import time)                              #
-# --------------------------------------------------------------------------- #
-try:
-    from xicor.xicor import Xi as _Xi
-    _XICOR_AVAILABLE = True
-except ImportError:
-    _XICOR_AVAILABLE = False
+FALLBACK_FLAGS = {"xi_n": False, "DC": False, "MI": False, "MIC": False}
 
-try:
-    import dcor as _dcor
-    _DCOR_AVAILABLE = True
-except ImportError:
-    _DCOR_AVAILABLE = False
-
-try:
-    from minepy import MINE as _MINE
-    _MINEPY_AVAILABLE = True
-except ImportError:
-    _MINEPY_AVAILABLE = False
-
-# Public flag so callers can warn the user once
-FALLBACK_FLAGS = {
-    "xi_n":   not _XICOR_AVAILABLE,
-    "dc":     not _DCOR_AVAILABLE,
-    "mic":    not _MINEPY_AVAILABLE,
-    "mi":     False,   # sklearn always available
-    "pearson":  False,
-    "spearman": False,
+THEORETICAL_EXPONENT = {
+    "xi_n": 1.00, "DC": 2.00, "MI": 1.00,
+    "MIC": 1.20, "pearson": 1.00, "spearman": 1.06,
 }
 
+SCORER_HYPERPARAMS = {
+    "xi_n":    {"params": "None (rank-based)"},
+    "DC":      {"params": "None (U-statistic)"},
+    "MI":      {"params": "n_neighbors=3, random_state=42"},
+    "MIC":     {"params": "alpha=0.6, c=15"},
+    "pearson": {"params": "None"},
+    "spearman":{"params": "None"},
+}
 
-# --------------------------------------------------------------------------- #
-#  Core scorers                                                                 #
-# --------------------------------------------------------------------------- #
+_MIC_CONDA_ENV = os.environ.get("MIC_CONDA_ENV", "ngorima_mic")
+_MIC_WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mic_worker.py")
+_MIC_MAX_NP = int(os.environ.get("MIC_MAX_NP", 50000))
+USE_FALLBACK_MIC = False
 
-def score_xi(x: np.ndarray, y: np.ndarray) -> float:
-    """
-    Chatterjee's ξₙ rank correlation (Chatterjee, 2021).
-
-    Uses xicor package when available; falls back to the exact
-    NumPy implementation from Eq. (1) of the original paper.
-    Complexity: O(n log n).
-
-    Environment variable ``NGORIMA_XI_NUMPY=1`` forces the numpy
-    implementation regardless of xicor availability.  This is used in
-    fast-mode timing benchmarks to avoid xicor's Python-object overhead
-    (which is ~100× slower than the numpy path for n < 50,000 and
-    inflates the empirical complexity exponent in sub-asymptotic regimes).
-    For production feature-scoring the xicor path is preferred as it
-    handles ties and edge cases more carefully.
-    """
-    import os as _osxi
-    x = np.asarray(x, dtype=np.float64)
-    y = np.asarray(y, dtype=np.float64)
-    _force_numpy = _osxi.environ.get("NGORIMA_XI_NUMPY", "0") == "1"
-    if _XICOR_AVAILABLE and not _force_numpy:
-        try:
-            return float(_Xi(x, y).correlation)
-        except Exception:
-            pass  # fall through to numpy implementation
-    # Exact fallback (Chatterjee 2021, Eq. 1)
-    n = len(x)
-    rank_y = scipy_stats.rankdata(y, method="average")
-    order  = np.argsort(scipy_stats.rankdata(x, method="ordinal"))
-    r_y_sorted = rank_y[order]
-    return float(1.0 - (3.0 * np.sum(np.abs(np.diff(r_y_sorted)))) / (n**2 - 1))
-
-
-def score_mi(x: np.ndarray, y: np.ndarray, random_state: int = 42) -> float:
-    """
-    Mutual information via k-NN estimator (Kraskov et al., 2004).
-    Implemented via sklearn.feature_selection.mutual_info_regression.
-    Complexity: O(n log n).
-    """
-    from sklearn.feature_selection import mutual_info_regression
-    x = np.asarray(x, dtype=np.float64)
-    y = np.asarray(y, dtype=np.float64)
-    return float(
-        mutual_info_regression(x.reshape(-1, 1), y, random_state=random_state)[0]
-    )
-
-
-def score_dc(x: np.ndarray, y: np.ndarray) -> float:
-    """
-    Distance correlation (Székely et al., 2007).
-    Uses dcor package (fast AVL-tree algorithm) when available;
-    falls back to the O(n²) NumPy reference implementation.
-    Complexity: O(n²) time, O(n²) memory.
-    """
-    x = np.asarray(x, dtype=np.float64)
-    y = np.asarray(y, dtype=np.float64)
-    if _DCOR_AVAILABLE:
-        try:
-            return float(_dcor.distance_correlation(x, y))
-        except Exception:
-            pass
-    # Reference O(n²) fallback
-    def _doubly_centered(v: np.ndarray) -> np.ndarray:
-        a = np.abs(v[:, None] - v[None, :])
-        return (a
-                - a.mean(axis=1, keepdims=True)
-                - a.mean(axis=0, keepdims=True)
-                + a.mean())
-
-    A = _doubly_centered(x)
-    B = _doubly_centered(y)
-    denom = np.sqrt((A * A).mean() * (B * B).mean())
-    if denom <= 0.0:
-        return 0.0
-    return float(np.sqrt(max(0.0, (A * B).mean()) / denom))
-
-
-def score_mic(x: np.ndarray, y: np.ndarray,
-              alpha: float = 0.6, c: int = 15) -> float:
-    """
-    Maximal Information Coefficient (Reshef et al., 2011).
-    Uses minepy when available (direct import or via minepy_env conda env).
-    Falls back to a binned MI approximation only if both fail.
-    Complexity: O(n^1.2) empirical (minepy), O(n·B²) fallback.
-    """
-    x = np.asarray(x, dtype=np.float64)
-    y = np.asarray(y, dtype=np.float64)
-    # Path 1: minepy available in current environment
-    if _MINEPY_AVAILABLE:
-        try:
-            mine = _MINE(alpha=alpha, c=c)
-            mine.compute_score(x, y)
-            return float(mine.mic())
-        except Exception:
-            pass
-    # Path 2: minepy_env conda environment (subprocess fallback)
+def _check_mic_env():
     try:
-        import subprocess, json, tempfile, os
-        with tempfile.NamedTemporaryFile(suffix=".npy", delete=False) as fx:
-            np.save(fx.name, np.column_stack([x, y]))
-            tmp_path = fx.name
-        script = (
-            f"import numpy as np, json\n"
-            f"from minepy import MINE\n"
-            f"data = np.load('{tmp_path}')\n"
-            f"mine = MINE(alpha={alpha}, c={c})\n"
-            f"mine.compute_score(data[:,0], data[:,1])\n"
-            f"print(json.dumps(mine.mic()))\n"
-        )
-        result = subprocess.run(
-            ["/opt/conda/bin/conda", "run", "-n", "minepy_env", "python", "-c", script],
-            capture_output=True, text=True, timeout=120
-        )
-        os.unlink(tmp_path)
-        if result.returncode == 0 and result.stdout.strip():
-            return float(json.loads(result.stdout.strip()))
+        r = subprocess.run(["conda", "run", "-n", _MIC_CONDA_ENV, "python", "-c", "import minepy; print(chr(111)+chr(107))"], capture_output=True, text=True, timeout=30)
+        return r.returncode == 0 and "ok" in r.stdout
     except Exception:
-        pass
-    # Fallback: binned mutual information (NOT true MIC)
-    warnings.warn(
-        "minepy not available. MIC approximated via histogram MI. "
-        "Complexity and values differ from Reshef (2011). "
-        "Results marked with USE_FALLBACK_MIC=True.",
-        UserWarning,
-        stacklevel=2,
-    )
-    bins = max(2, int(np.sqrt(len(x) / 4)))
-    h, _, _ = np.histogram2d(x, y, bins=bins)
-    h = h / h.sum()
-    hx = h.sum(axis=1)
-    hy = h.sum(axis=0)
-    mi_val = 0.0
-    for i in range(bins):
-        for j in range(bins):
-            if h[i, j] > 0 and hx[i] > 0 and hy[j] > 0:
-                mi_val += h[i, j] * np.log(h[i, j] / (hx[i] * hy[j]))
-    return float(mi_val)
+        return False
 
+_MIC_ENV_AVAILABLE = _check_mic_env()
+if not _MIC_ENV_AVAILABLE:
+    FALLBACK_FLAGS["MIC"] = True
+    USE_FALLBACK_MIC = True
+    warnings.warn("ngorima_mic env not found — MIC returns NaN", RuntimeWarning, stacklevel=2)
 
-def score_pearson(x: np.ndarray, y: np.ndarray) -> float:
-    """
-    Absolute Pearson correlation coefficient (linear baseline).
-    Complexity: O(n).
+def score_xi_n(X, y):
+    try:
+        n = len(y); order = np.argsort(X)
+        rank_y = np.argsort(np.argsort(y[order])) + 1
+        num = n * np.sum(np.abs(np.diff(rank_y)))
+        den = 2 * np.sum(rank_y * (n - rank_y))
+        return float(0.0 if den == 0 else 1.0 - num / den)
+    except Exception:
+        FALLBACK_FLAGS["xi_n"] = True
+        from scipy.stats import spearmanr
+        return float(abs(spearmanr(X, y).correlation))
 
-    P2 fix: Added as O(n) baseline per reviewer recommendation.
-    """
-    x = np.asarray(x, dtype=np.float64)
-    y = np.asarray(y, dtype=np.float64)
-    if np.std(x) == 0 or np.std(y) == 0:
-        return 0.0
-    r, _ = scipy_stats.pearsonr(x, y)
-    return float(abs(r))
+def score_dc(X, y):
+    try:
+        import dcor
+        return float(dcor.distance_correlation(X, y))
+    except ImportError:
+        FALLBACK_FLAGS["DC"] = True
+        return float(abs(np.corrcoef(X, y)[0, 1]))
 
+def score_mi(X, y, n_neighbors=3, random_state=42):
+    try:
+        from sklearn.feature_selection import mutual_info_regression
+        X2d = X.reshape(-1, 1) if X.ndim == 1 else X
+        return float(mutual_info_regression(X2d, y, n_neighbors=n_neighbors, random_state=random_state)[0])
+    except ImportError:
+        FALLBACK_FLAGS["MI"] = True
+        return float("nan")
 
-def score_spearman(x: np.ndarray, y: np.ndarray) -> float:
-    """
-    Absolute Spearman rank correlation (monotone baseline).
-    Complexity: O(n log n).
+def score_mic_subprocess(X, y, alpha=0.6, c=15.0):
+    if USE_FALLBACK_MIC or not _MIC_ENV_AVAILABLE:
+        return float("nan")
+    if len(X) > _MIC_MAX_NP:
+        return float("nan")
+    with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        np.savez(tmp_path, X=X.astype(np.float64), y=y.astype(np.float64), alpha=np.array([alpha]), c=np.array([c]))
+        r = subprocess.run(["conda", "run", "--no-capture-output", "-n", _MIC_CONDA_ENV, "python", _MIC_WORKER, tmp_path], capture_output=True, text=True, timeout=300)
+        return float("nan") if r.returncode != 0 else float(r.stdout.strip())
+    except Exception:
+        return float("nan")
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
-    P2 fix: Added as rank-based O(n log n) baseline.
-    """
-    x = np.asarray(x, dtype=np.float64)
-    y = np.asarray(y, dtype=np.float64)
-    r, _ = scipy_stats.spearmanr(x, y)
-    return float(abs(r))
+def score_pearson(X, y):
+    return float(np.corrcoef(X, y)[0, 1])
 
+def score_spearman(X, y):
+    from scipy.stats import spearmanr
+    return float(spearmanr(X, y).correlation)
 
-# --------------------------------------------------------------------------- #
-#  Registry                                                                    #
-# --------------------------------------------------------------------------- #
-
-SCORERS: dict[str, callable] = {
-    "xi_n":    score_xi,
-    "mi":      score_mi,
-    "dc":      score_dc,
-    "mic":     score_mic,
-    "pearson": score_pearson,
-    "spearman": score_spearman,
+_SCORER_REGISTRY = {
+    "xi_n": score_xi_n, "DC": score_dc, "MI": score_mi,
+    "MIC": score_mic_subprocess, "pearson": score_pearson, "spearman": score_spearman,
 }
 
-LABELS: dict[str, str] = {
-    "xi_n":    "ξₙ",
-    "mi":      "MI",
-    "dc":      "DC",
-    "mic":     "MIC",
-    "pearson": "Pearson",
-    "spearman": "Spearman",
-}
+xi_scorer = score_xi_n; dc_scorer = score_dc; mi_scorer = score_mi
+mic_scorer = score_mic_subprocess; pearson_scorer = score_pearson; spearman_scorer = score_spearman
 
-THEORETICAL_EXPONENT: dict[str, float] = {
-    "xi_n":    1.05,
-    "mi":      1.05,
-    "dc":      2.00,
-    "mic":     1.20,
-    "pearson": 1.00,
-    "spearman": 1.05,
-}
+def get_all_scorers():
+    return dict(_SCORER_REGISTRY)
+
+def get_xi_scorer():
+    return score_xi_n
+
+def get_scorer(name):
+    if name not in _SCORER_REGISTRY:
+        raise KeyError(f"Unknown scorer '{name}'. Available: {list(_SCORER_REGISTRY)}")
+    return _SCORER_REGISTRY[name]
+
+def get_theoretical_exponent(name):
+    return THEORETICAL_EXPONENT[name]
