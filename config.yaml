@@ -13,11 +13,11 @@ superconductivity:
   n_rows: 21263
   n_features: 81
 fred_md:
-  url: "https://files.stlouisfed.org/files/htdocs/fred-md/monthly/current.csv"
+  url: "https://www.stlouisfed.org/-/media/project/frbstl/stlouisfed/research/fred-md/monthly/2026-03-md.csv"
   raw_path: "data/raw/fred_md.csv"
   target_series: "INDPRO"
   target_transform_code: 5
-  n_rows: 804
+  n_rows: 780
   n_features: 128
 materials_project:
   raw_path: "data/raw/materials_project.csv"
@@ -45,7 +45,7 @@ scenario_e:
   n_values: [100000, 1000000]
   p_values: [10, 50, 100, 500]
   n_reps_parallel: 10
-EIC:
+mic:
   conda_env: "ngorima_mic"
   worker_script: "src/ngorima2025/mic_worker.py"
   alpha: 0.6
