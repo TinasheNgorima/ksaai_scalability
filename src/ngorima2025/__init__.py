@@ -149,3 +149,7 @@ def log_system_state() -> dict:
     with open(RESULTS_DIR / 'system_state.json', 'w') as f:
         json.dump(info, f, indent=2)
     return info
+ 
+DATA_DIR = _Path('data') 
+ 
+DATA_DIR = _Path('data') 
